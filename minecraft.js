@@ -208,12 +208,16 @@ class MinecraftBot {
 
     this._attachEvents(bot);
     this._attachCaptcha(bot);
+    this._humanize(bot);
   }
 
   // ── Destroy ───────────────────────────────────────────────────
   destroy() {
     this._alive = false;
     clearTimeout(this._reconnectTimer);
+    clearTimeout(this._jitterTimer);
+    clearTimeout(this._swingTimer);
+    clearTimeout(this._sneakTimer);
     try { this._bot?.quit(); } catch (_) {}
     this._bot = null;
   }
@@ -314,61 +318,118 @@ class MinecraftBot {
     });
   }
 
-  // ── Captcha image watcher — polls aggressively so map renders before kick
+  // ── Captcha image watcher — intercepts raw map packet before kick lands
   _attachCaptcha(bot) {
-    let rendered  = false;
-    let pollTimer = null;
+    let rendered = false;
 
-    const tryRender = async () => {
-      if (rendered || !this._bot) return;
-
-      // Check every map slot bot knows about
-      const maps = bot.maps || {};
-      for (const mapObj of Object.values(maps)) {
-        if (!mapObj?.data) continue;
-
-        rendered = true;
-        clearInterval(pollTimer);
-        this._log('Map captcha found — rendering PNG for Discord');
-
-        try {
-          const rgba      = mapToRgba(mapObj.data);
-          const pngBuffer = await rgbaToPng(rgba);
-          this._log('PNG ready — posting to Discord');
-          this.onCaptcha(pngBuffer);
-        } catch (err) {
-          this._log(`PNG render failed: ${err.message}`);
-          this.onEvent('captcha', '⚠️ Could not render captcha image — use `!captcha <username> <answer>`');
-        }
-        return;
+    const renderFromData = async (data, label) => {
+      if (rendered || !data) return;
+      rendered = true;
+      this._log(`Map captcha intercepted (${label}) — rendering PNG`);
+      try {
+        const rgba      = mapToRgba(data);
+        const pngBuffer = await rgbaToPng(rgba);
+        this._log('PNG ready — posting to Discord');
+        this.onCaptcha(pngBuffer);
+      } catch (err) {
+        this._log(`PNG render failed: ${err.message}`);
+        this.onEvent('captcha', '⚠️ Could not render captcha image — use `!captcha <username> <answer>`');
       }
     };
 
-    // Start polling as soon as captcha is pending — every 300ms for up to 15s
-    const startPoll = () => {
-      if (pollTimer || rendered) return;
-      let ticks = 0;
-      pollTimer = setInterval(() => {
-        ticks++;
-        tryRender();
-        if (ticks > 50) clearInterval(pollTimer); // give up after 15s
-      }, 300);
-    };
-
-    bot.on('heldItemChanged', () => { startPoll(); tryRender(); });
-    bot.on('map',             () => { startPoll(); tryRender(); });
-    bot.on('spawn',           () => {
-      // Start polling immediately on spawn — server gives map right away
-      setTimeout(() => { startPoll(); tryRender(); }, 300);
+    // ── Raw packet intercept — fires before mineflayer processes it ──
+    // map_data packet contains the raw pixel bytes directly
+    bot._client.on('map', (packet) => {
+      if (rendered) return;
+      // packet.data is a Buffer of 128*128 palette indices
+      if (packet.data && packet.data.length >= 128 * 128) {
+        this._log(`Raw map packet received — id=${packet.itemDamage ?? packet.mapId}`);
+        renderFromData(packet.data, 'raw packet');
+      }
     });
 
-    // Keep polling whenever a message arrives too
-    bot.on('message', () => {
-      if (!rendered) startPoll();
+    // ── Fallback: mineflayer's parsed map event ──
+    bot.on('map', (map) => {
+      if (rendered || !map?.data) return;
+      renderFromData(map.data, 'mineflayer map event');
+    });
+
+    // ── Fallback: held item is a map, check bot.maps ──
+    bot.on('heldItemChanged', () => {
+      if (rendered) return;
+      const maps = bot.maps || {};
+      for (const m of Object.values(maps)) {
+        if (m?.data) { renderFromData(m.data, 'heldItemChanged'); return; }
+      }
     });
   }
 
-  _setStatus(s) { this.status = s; this.onStatus(s); }
+  // ── Human emulation — makes bot look like a real client ─────────
+  _humanize(bot) {
+    // 1. Spoof client brand — send "vanilla" instead of "mineflayer"
+    bot.once('login', () => {
+      try {
+        bot._client.write('plugin_message', {
+          channel: 'minecraft:brand',
+          data:    Buffer.concat([
+            Buffer.from([7]), // varint length of "vanilla"
+            Buffer.from('vanilla'),
+          ]),
+        });
+      } catch (_) {}
+
+      // 2. Send client settings packet — real clients always send this
+      try {
+        bot._client.write('settings', {
+          locale:             'en_US',
+          viewDistance:       8,
+          chatFlags:          0,
+          chatColors:         true,
+          skinParts:          127,
+          mainHand:           1,
+          enableTextFiltering: false,
+          enableServerListing: true,
+        });
+      } catch (_) {}
+    });
+
+    // 3. Micro-movements — small random yaw/pitch shifts like a real player
+    //    Only runs while bot is alive, stops on kick/disconnect
+    const jitter = () => {
+      if (!this._bot || !this._alive) return;
+      try {
+        const yaw   = (bot.entity?.yaw   || 0) + (Math.random() - 0.5) * 0.04;
+        const pitch = (bot.entity?.pitch || 0) + (Math.random() - 0.5) * 0.02;
+        bot.look(yaw, pitch, false);
+      } catch (_) {}
+      // Random interval 4–9s between micro-looks
+      this._jitterTimer = setTimeout(jitter, 4000 + Math.random() * 5000);
+    };
+
+    bot.once('spawn', () => {
+      // Start jitter after a human-like delay of 1.5–3s after spawn
+      this._jitterTimer = setTimeout(jitter, 1500 + Math.random() * 1500);
+
+      // 4. Occasional arm swing — real players do this passively
+      const swing = () => {
+        if (!this._bot || !this._alive) return;
+        try { bot.swingArm(); } catch (_) {}
+        this._swingTimer = setTimeout(swing, 15000 + Math.random() * 30000);
+      };
+      this._swingTimer = setTimeout(swing, 8000 + Math.random() * 10000);
+
+      // 5. Sneak tap — very occasional, looks human
+      const sneak = () => {
+        if (!this._bot || !this._alive) return;
+        try {
+          bot.setControlState('sneak', true);
+          setTimeout(() => { try { bot.setControlState('sneak', false); } catch (_) {} }, 200 + Math.random() * 300);
+        } catch (_) {}
+        this._sneakTimer = setTimeout(sneak, 45000 + Math.random() * 60000);
+      };
+      this._sneakTimer = setTimeout(sneak, 20000 + Math.random() * 20000);
+    });
+  }
 
   _log(msg) {
     const line = `[${new Date().toISOString()}] ${msg}`;
