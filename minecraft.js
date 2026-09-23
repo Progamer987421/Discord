@@ -120,10 +120,18 @@ function parseProxy(str) {
 
 // ── Parse kick reason — handles raw JSON objects from the server ──
 function parseKickReason(reason) {
-  if (typeof reason === 'string') return reason;
-  if (reason?.text) return reason.text;
-  if (reason?.extra) return reason.extra.map(e => e.text || '').join('');
-  try { return JSON.stringify(reason); } catch (_) { return String(reason); }
+  if (typeof reason === 'string') {
+    try { reason = JSON.parse(reason); } catch (_) { return reason; }
+  }
+  function extract(node) {
+    if (!node) return '';
+    if (typeof node === 'string') return node;
+    let out = node.text || '';
+    if (Array.isArray(node.extra)) out += node.extra.map(extract).join('');
+    return out;
+  }
+  const text = extract(reason).trim();
+  return text || (() => { try { return JSON.stringify(reason); } catch (_) { return String(reason); } })();
 }
 
 // ── MinecraftBot — MANUAL MODE ────────────────────────────────────
@@ -287,10 +295,11 @@ class MinecraftBot {
 
     // Disconnected — report it, stop. No auto-reconnect.
     bot.on('end', (reason) => {
-      this._log(`Disconnected: ${reason}`);
+      const r = parseKickReason(reason);
+      this._log(`Disconnected: ${r}`);
       this._bot = null;
-      this._setStatus(`disconnected — use !spawn to reconnect`);
-      this.onEvent('kicked', `Disconnected: ${reason}`);
+      this._setStatus(`disconnected — use !reconnect to rejoin`);
+      this.onEvent('kicked', `Disconnected: ${r}`);
     });
 
     bot.on('error', (err) => {
@@ -304,38 +313,59 @@ class MinecraftBot {
     });
   }
 
-  // ── Captcha image watcher — still active so image posts to Discord
+  // ── Captcha image watcher — polls aggressively so map renders before kick
   _attachCaptcha(bot) {
-    let rendering = false;
+    let rendered  = false;
+    let pollTimer = null;
 
     const tryRender = async () => {
-      if (!this.captchaPending || rendering) return;
-      const held = bot.heldItem;
-      if (!held?.name?.includes('map')) return;
+      if (rendered || !this._bot) return;
 
-      const mapId  = held.metadata?.[0]?.value ?? held.nbt?.value?.map?.value;
-      const mapObj = bot.maps?.[mapId];
-      if (!mapObj?.data) return;
+      // Check every map slot bot knows about, not just held item
+      const maps = bot.maps || {};
+      for (const mapObj of Object.values(maps)) {
+        if (!mapObj?.data) continue;
 
-      rendering = true;
-      this._log('Map captcha detected — rendering PNG for Discord');
+        rendered = true;
+        clearInterval(pollTimer);
+        this._log('Map captcha found — rendering PNG for Discord');
 
-      try {
-        const rgba      = mapToRgba(mapObj.data);
-        const pngBuffer = await rgbaToPng(rgba);
-        this._log('PNG ready — posting to Discord');
-        this.onCaptcha(pngBuffer);
-      } catch (err) {
-        this._log(`PNG render failed: ${err.message}`);
-        this.onEvent('captcha', '⚠️ Could not render captcha image — use `!captcha <username> <answer>`');
+        try {
+          const rgba      = mapToRgba(mapObj.data);
+          const pngBuffer = await rgbaToPng(rgba);
+          this._log('PNG ready — posting to Discord');
+          this.onCaptcha(pngBuffer);
+        } catch (err) {
+          this._log(`PNG render failed: ${err.message}`);
+          this.onEvent('captcha', '⚠️ Could not render captcha image — use `!captcha <username> <answer>`');
+        }
+        return;
       }
-
-      rendering = false;
     };
 
-    bot.on('heldItemChanged', () => { if (this.captchaPending) setTimeout(tryRender, 300); });
-    bot.on('map',             () => { if (this.captchaPending) setTimeout(tryRender, 200); });
-    bot.on('spawn',           () => { setTimeout(() => { if (this.captchaPending) tryRender(); }, 1500); });
+    // Start polling as soon as captcha is pending — every 300ms for up to 15s
+    const startPoll = () => {
+      if (pollTimer || rendered) return;
+      let ticks = 0;
+      pollTimer = setInterval(() => {
+        ticks++;
+        tryRender();
+        if (ticks > 50) clearInterval(pollTimer); // give up after 15s
+      }, 300);
+    };
+
+    bot.on('heldItemChanged', () => { if (this.captchaPending) { startPoll(); tryRender(); } });
+    bot.on('map',             () => { if (this.captchaPending) { startPoll(); tryRender(); } });
+    bot.on('spawn',           () => {
+      // Start polling immediately on spawn — server gives map right away
+      setTimeout(() => { startPoll(); tryRender(); }, 500);
+    });
+
+    // Also hook into captchaPending being set
+    const origMessage = bot.listeners?.('message') ?? [];
+    bot.on('message', () => {
+      if (this.captchaPending && !rendered) startPoll();
+    });
   }
 
   _setStatus(s) { this.status = s; this.onStatus(s); }
