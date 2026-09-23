@@ -64,7 +64,6 @@ manager.onCaptchaImage = async (username, pngBuffer) => {
 
     const sent = await ch.send({ embeds: [embed], files: [file] });
     captchaReplies.set(sent.id, username);
-    // Auto-expire after 5 minutes
     setTimeout(() => captchaReplies.delete(sent.id), 300_000);
   } catch (err) {
     console.error('[Discord] Failed to send captcha image:', err.message);
@@ -72,7 +71,6 @@ manager.onCaptchaImage = async (username, pngBuffer) => {
 };
 
 manager.onBotEvent = async (username, event, detail) => {
-  // Only post important events — skip 'info' spam
   if (event === 'info') return;
 
   try {
@@ -103,9 +101,9 @@ manager.onBotEvent = async (username, event, detail) => {
 
 // ── Auth check ────────────────────────────────────────────────────
 function isAllowed(msg) {
-  if (msg.author.bot)           return false;
-  if (msg.guildId   !== GUILD_ID)   return false;
-  if (msg.channelId !== CHANNEL_ID) return false;
+  if (msg.author.bot)                return false;
+  if (msg.guildId   !== GUILD_ID)    return false;
+  if (msg.channelId !== CHANNEL_ID)  return false;
   if (OWNER_ID && msg.author.id !== OWNER_ID) return false;
   return true;
 }
@@ -121,6 +119,7 @@ function helpEmbed() {
       { name: '`!kill <username>`',                  value: 'Kill and remove a bot', inline: false },
       { name: '`!killall`',                          value: 'Kill every bot', inline: false },
       { name: '`!list`',                             value: 'Show all bots and their status', inline: false },
+      { name: '`!reconnect <username>`',             value: 'Manually reconnect a disconnected bot', inline: false },
       { name: '`!chat <username> <message>`',        value: 'Send a message in-game via that bot', inline: false },
       { name: '`!broadcast <message>`',              value: 'Send from ALL online bots at once', inline: false },
       { name: '`!logs <username>`',                  value: 'Show last 25 log lines', inline: false },
@@ -132,7 +131,7 @@ function helpEmbed() {
 }
 
 function statusEmoji(bot) {
-  if (bot.status.startsWith('online'))     return '🟢';
+  if (bot.status.startsWith('online') || bot.status.startsWith('connected')) return '🟢';
   if (bot.status.includes('reconnect') ||
       bot.status.includes('joining')   ||
       bot.status.includes('queued')    ||
@@ -142,7 +141,7 @@ function statusEmoji(bot) {
 }
 
 function listEmbed(bots) {
-  const online = bots.filter(b => b.status.startsWith('online')).length;
+  const online = bots.filter(b => b.status.startsWith('online') || b.status.startsWith('connected')).length;
   const lines  = bots.map(b => {
     const em    = statusEmoji(b);
     const proxy = b.proxy !== 'direct' ? ` 🌐${b.proxy}` : '';
@@ -188,7 +187,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // ── !spawn [count] [proxy?] ────────────────────────────────────
+  // ── !spawn [count] [proxy?] ───────────────────────────────────
   if (cmd === 'spawn') {
     const count    = Math.min(parseInt(args[0]) || 1, 10);
     const proxyStr = args[1] || null;
@@ -238,6 +237,17 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
+  // ── !reconnect <username> ─────────────────────────────────────
+  if (cmd === 'reconnect') {
+    if (!args[0]) { await msg.reply('❌ Usage: `!reconnect <username>`'); return; }
+    const result = manager.reconnect(args[0]);
+    await msg.reply(result.error
+      ? `❌ ${result.error}`
+      : `🔄 **${args[0]}** reconnecting...`
+    );
+    return;
+  }
+
   // ── !chat <username> <message> ────────────────────────────────
   if (cmd === 'chat') {
     const username = args[0];
@@ -265,8 +275,7 @@ client.on('messageCreate', async (msg) => {
     if (!args[0]) { await msg.reply('❌ Usage: `!logs <username>`'); return; }
     const result = manager.getLogs(args[0], 25);
     if (result.error) { await msg.reply(`❌ ${result.error}`); return; }
-    const text = result.logs.join('\n') || 'No logs yet.';
-    // Discord has a 2000 char message limit — trim if needed
+    const text    = result.logs.join('\n') || 'No logs yet.';
     const trimmed = text.length > 1800 ? '...\n' + text.slice(-1800) : text;
     await msg.reply(`\`\`\`\n${trimmed}\n\`\`\``);
     return;

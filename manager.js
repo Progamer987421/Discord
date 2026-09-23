@@ -17,12 +17,9 @@ const MAX_LOGS = 500;
 
 class Manager {
   constructor() {
-    // username → { bot: MinecraftBot, logs: string[], status: string }
     this._bots = new Map();
-
-    // Callbacks injected by Discord layer
-    this.onCaptchaImage = null; // (username, pngBuffer) => void
-    this.onBotEvent     = null; // (username, event, detail) => void
+    this.onCaptchaImage = null;
+    this.onBotEvent     = null;
   }
 
   // ── Spawn N bots, staggered 3-7s apart ───────────────────────
@@ -94,10 +91,24 @@ class Manager {
     this._bots.clear();
   }
 
+  // ── Manual reconnect ──────────────────────────────────────────
+  reconnect(username) {
+    const entry = this._bots.get(username);
+    if (!entry) return { error: `No bot named "${username}"` };
+    entry.bot?.destroy();
+    entry.status = 'reconnecting';
+    setTimeout(() => {
+      if (entry.bot) {
+        entry.bot.connect();
+      }
+    }, 1000);
+    return { success: true };
+  }
+
   // ── Send chat via one bot ─────────────────────────────────────
   chat(username, message) {
     const entry = this._bots.get(username);
-    if (!entry)       return { error: `No bot named "${username}"` };
+    if (!entry)           return { error: `No bot named "${username}"` };
     if (!entry.bot?.online) return { error: `${username} is not online` };
     entry.bot.chat(message);
     return { success: true };
@@ -115,7 +126,7 @@ class Manager {
   // ── Submit captcha for one bot ────────────────────────────────
   submitCaptcha(username, answer) {
     const entry = this._bots.get(username);
-    if (!entry) return { error: `No bot named "${username}"` };
+    if (!entry)     return { error: `No bot named "${username}"` };
     if (!entry.bot) return { error: 'Bot not initialised yet' };
     return entry.bot.submitCaptcha(answer);
   }
