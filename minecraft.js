@@ -248,11 +248,12 @@ class MinecraftBot {
   // You control everything via !chat commands in Discord.
   _attachEvents(bot) {
 
-    // Spawned — just sit and report
+    // Spawned — assume captcha is coming, start watching immediately
     bot.once('spawn', () => {
-      this._setStatus('connected — waiting for your commands');
-      this._log('Connected and spawned. Waiting for manual commands.');
-      this.onEvent('online', 'Connected — send commands manually via !chat');
+      this._setStatus('connected — waiting for captcha');
+      this._log('Spawned — watching for map captcha.');
+      this.captchaPending = true;
+      this.onEvent('online', 'Connected — watching for captcha map');
     });
 
     // Log all incoming messages so you can see what the server says
@@ -321,7 +322,7 @@ class MinecraftBot {
     const tryRender = async () => {
       if (rendered || !this._bot) return;
 
-      // Check every map slot bot knows about, not just held item
+      // Check every map slot bot knows about
       const maps = bot.maps || {};
       for (const mapObj of Object.values(maps)) {
         if (!mapObj?.data) continue;
@@ -354,17 +355,16 @@ class MinecraftBot {
       }, 300);
     };
 
-    bot.on('heldItemChanged', () => { if (this.captchaPending) { startPoll(); tryRender(); } });
-    bot.on('map',             () => { if (this.captchaPending) { startPoll(); tryRender(); } });
+    bot.on('heldItemChanged', () => { startPoll(); tryRender(); });
+    bot.on('map',             () => { startPoll(); tryRender(); });
     bot.on('spawn',           () => {
       // Start polling immediately on spawn — server gives map right away
-      setTimeout(() => { startPoll(); tryRender(); }, 500);
+      setTimeout(() => { startPoll(); tryRender(); }, 300);
     });
 
-    // Also hook into captchaPending being set
-    const origMessage = bot.listeners?.('message') ?? [];
+    // Keep polling whenever a message arrives too
     bot.on('message', () => {
-      if (this.captchaPending && !rendered) startPoll();
+      if (!rendered) startPoll();
     });
   }
 
