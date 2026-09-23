@@ -208,7 +208,6 @@ class MinecraftBot {
 
     this._attachEvents(bot);
     this._attachCaptcha(bot);
-    this._humanize(bot);
   }
 
   // ── Destroy ───────────────────────────────────────────────────
@@ -258,6 +257,59 @@ class MinecraftBot {
       this._log('Spawned — watching for map captcha.');
       this.captchaPending = true;
       this.onEvent('online', 'Connected — watching for captcha map');
+
+      // ── Spoof client brand to "vanilla" ──
+      try {
+        bot._client.write('plugin_message', {
+          channel: 'minecraft:brand',
+          data: Buffer.concat([Buffer.from([7]), Buffer.from('vanilla')]),
+        });
+      } catch (_) {}
+
+      // ── Send client settings — real clients always send this ──
+      try {
+        bot._client.write('settings', {
+          locale:              'en_US',
+          viewDistance:        8,
+          chatFlags:           0,
+          chatColors:          true,
+          skinParts:           127,
+          mainHand:            1,
+          enableTextFiltering: false,
+          enableServerListing: true,
+        });
+      } catch (_) {}
+
+      // ── Micro-look jitter every 4–9s ──
+      const jitter = () => {
+        if (!this._bot || !this._alive) return;
+        try {
+          const yaw   = (bot.entity?.yaw   || 0) + (Math.random() - 0.5) * 0.04;
+          const pitch = (bot.entity?.pitch || 0) + (Math.random() - 0.5) * 0.02;
+          bot.look(yaw, pitch, false);
+        } catch (_) {}
+        this._jitterTimer = setTimeout(jitter, 4000 + Math.random() * 5000);
+      };
+      this._jitterTimer = setTimeout(jitter, 1500 + Math.random() * 1500);
+
+      // ── Arm swing every 15–45s ──
+      const swing = () => {
+        if (!this._bot || !this._alive) return;
+        try { bot.swingArm(); } catch (_) {}
+        this._swingTimer = setTimeout(swing, 15000 + Math.random() * 30000);
+      };
+      this._swingTimer = setTimeout(swing, 8000 + Math.random() * 10000);
+
+      // ── Sneak tap every 45–105s ──
+      const sneak = () => {
+        if (!this._bot || !this._alive) return;
+        try {
+          bot.setControlState('sneak', true);
+          setTimeout(() => { try { bot.setControlState('sneak', false); } catch (_) {} }, 200 + Math.random() * 300);
+        } catch (_) {}
+        this._sneakTimer = setTimeout(sneak, 45000 + Math.random() * 60000);
+      };
+      this._sneakTimer = setTimeout(sneak, 20000 + Math.random() * 20000);
     });
 
     // Log all incoming messages so you can see what the server says
@@ -361,73 +413,6 @@ class MinecraftBot {
       for (const m of Object.values(maps)) {
         if (m?.data) { renderFromData(m.data, 'heldItemChanged'); return; }
       }
-    });
-  }
-
-  // ── Human emulation — makes bot look like a real client ─────────
-  _humanize(bot) {
-    // 1. Spoof client brand — send "vanilla" instead of "mineflayer"
-    bot.once('login', () => {
-      try {
-        bot._client.write('plugin_message', {
-          channel: 'minecraft:brand',
-          data:    Buffer.concat([
-            Buffer.from([7]), // varint length of "vanilla"
-            Buffer.from('vanilla'),
-          ]),
-        });
-      } catch (_) {}
-
-      // 2. Send client settings packet — real clients always send this
-      try {
-        bot._client.write('settings', {
-          locale:             'en_US',
-          viewDistance:       8,
-          chatFlags:          0,
-          chatColors:         true,
-          skinParts:          127,
-          mainHand:           1,
-          enableTextFiltering: false,
-          enableServerListing: true,
-        });
-      } catch (_) {}
-    });
-
-    // 3. Micro-movements — small random yaw/pitch shifts like a real player
-    //    Only runs while bot is alive, stops on kick/disconnect
-    const jitter = () => {
-      if (!this._bot || !this._alive) return;
-      try {
-        const yaw   = (bot.entity?.yaw   || 0) + (Math.random() - 0.5) * 0.04;
-        const pitch = (bot.entity?.pitch || 0) + (Math.random() - 0.5) * 0.02;
-        bot.look(yaw, pitch, false);
-      } catch (_) {}
-      // Random interval 4–9s between micro-looks
-      this._jitterTimer = setTimeout(jitter, 4000 + Math.random() * 5000);
-    };
-
-    bot.once('spawn', () => {
-      // Start jitter after a human-like delay of 1.5–3s after spawn
-      this._jitterTimer = setTimeout(jitter, 1500 + Math.random() * 1500);
-
-      // 4. Occasional arm swing — real players do this passively
-      const swing = () => {
-        if (!this._bot || !this._alive) return;
-        try { bot.swingArm(); } catch (_) {}
-        this._swingTimer = setTimeout(swing, 15000 + Math.random() * 30000);
-      };
-      this._swingTimer = setTimeout(swing, 8000 + Math.random() * 10000);
-
-      // 5. Sneak tap — very occasional, looks human
-      const sneak = () => {
-        if (!this._bot || !this._alive) return;
-        try {
-          bot.setControlState('sneak', true);
-          setTimeout(() => { try { bot.setControlState('sneak', false); } catch (_) {} }, 200 + Math.random() * 300);
-        } catch (_) {}
-        this._sneakTimer = setTimeout(sneak, 45000 + Math.random() * 60000);
-      };
-      this._sneakTimer = setTimeout(sneak, 20000 + Math.random() * 20000);
     });
   }
 
