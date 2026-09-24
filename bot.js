@@ -1,5 +1,11 @@
 'use strict';
 
+/**
+ * bot.js
+ * Discord bot entry point.
+ * All commands live here. Nothing else.
+ */
+
 require('dotenv').config();
 
 const {
@@ -12,6 +18,7 @@ const {
 
 const Manager = require('./manager');
 
+// ── Validate required env vars ────────────────────────────────────
 ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_CHANNEL_ID'].forEach(k => {
   if (!process.env[k]) {
     console.error(`[ERROR] Missing required env var: ${k}`);
@@ -24,7 +31,8 @@ const GUILD_ID   = process.env.DISCORD_GUILD_ID;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const OWNER_ID   = process.env.DISCORD_OWNER_ID || null;
 
-const client  = new Client({
+// ── Discord client ────────────────────────────────────────────────
+const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
@@ -33,19 +41,22 @@ const client  = new Client({
   partials: [Partials.Message, Partials.Channel],
 });
 
+// ── Bot manager ───────────────────────────────────────────────────
 const manager = new Manager();
+
+// captcha reply tracking: Discord message id → Minecraft username
 const captchaReplies = new Map();
 
-// ── Manager callbacks ─────────────────────────────────────────────
+// ── Wire manager callbacks ────────────────────────────────────────
 manager.onCaptchaImage = async (username, pngBuffer) => {
   try {
-    const ch    = await client.channels.fetch(CHANNEL_ID);
-    const file  = new AttachmentBuilder(pngBuffer, { name: 'captcha.png' });
+    const ch   = await client.channels.fetch(CHANNEL_ID);
+    const file = new AttachmentBuilder(pngBuffer, { name: 'captcha.png' });
     const embed = new EmbedBuilder()
       .setColor(0xffd740)
       .setTitle(`🔐 Captcha for ${username}`)
       .setDescription(
-        `**Reply to this message** with the captcha text.\n` +
+        `**Reply to this message** with the captcha text shown in the image.\n` +
         `Or use: \`!captcha ${username} <answer>\``
       )
       .setImage('attachment://captcha.png')
@@ -53,6 +64,7 @@ manager.onCaptchaImage = async (username, pngBuffer) => {
 
     const sent = await ch.send({ embeds: [embed], files: [file] });
     captchaReplies.set(sent.id, username);
+    // Auto-expire after 5 minutes
     setTimeout(() => captchaReplies.delete(sent.id), 300_000);
   } catch (err) {
     console.error('[Discord] Failed to send captcha image:', err.message);
@@ -60,11 +72,25 @@ manager.onCaptchaImage = async (username, pngBuffer) => {
 };
 
 manager.onBotEvent = async (username, event, detail) => {
+  // Only post important events — skip 'info' spam
   if (event === 'info') return;
+
   try {
-    const ch    = await client.channels.fetch(CHANNEL_ID);
-    const color = { online: 0x00e676, kicked: 0xff1744, captcha: 0xffd740, error: 0xff5252 }[event] ?? 0x607d8b;
-    const icon  = { online: '✅', kicked: '💀', captcha: '🔐', error: '❌' }[event] ?? 'ℹ️';
+    const ch = await client.channels.fetch(CHANNEL_ID);
+    const color = {
+      online:  0x00e676,
+      kicked:  0xff1744,
+      captcha: 0xffd740,
+      error:   0xff5252,
+    }[event] ?? 0x607d8b;
+
+    const icon = {
+      online:  '✅',
+      kicked:  '💀',
+      captcha: '🔐',
+      error:   '❌',
+    }[event] ?? 'ℹ️';
+
     await ch.send({
       embeds: [
         new EmbedBuilder()
@@ -75,9 +101,9 @@ manager.onBotEvent = async (username, event, detail) => {
   } catch (_) {}
 };
 
-// ── Auth ──────────────────────────────────────────────────────────
+// ── Auth check ────────────────────────────────────────────────────
 function isAllowed(msg) {
-  if (msg.author.bot)               return false;
+  if (msg.author.bot)           return false;
   if (msg.guildId   !== GUILD_ID)   return false;
   if (msg.channelId !== CHANNEL_ID) return false;
   if (OWNER_ID && msg.author.id !== OWNER_ID) return false;
@@ -90,16 +116,11 @@ function helpEmbed() {
     .setColor(0x00e676)
     .setTitle('⛏ AppleMC Bot — Commands')
     .addFields(
-      { name: '`!spawn <count>`',                    value: 'Spawn bots from accounts.txt (max 10)', inline: false },
+      { name: '`!spawn <count>`',                    value: 'Spawn bots (max 10 at once)', inline: false },
       { name: '`!spawn <count> <proxy>`',            value: 'Spawn with proxy — `socks5://user:pass@host:port`', inline: false },
       { name: '`!kill <username>`',                  value: 'Kill and remove a bot', inline: false },
       { name: '`!killall`',                          value: 'Kill every bot', inline: false },
-      { name: '`!list`',                             value: 'Show all running bots', inline: false },
-      { name: '`!accounts`',                         value: 'List all accounts in accounts.txt', inline: false },
-      { name: '`!addacc <username> [password]`',     value: 'Add an account (saved to accounts.txt)', inline: false },
-      { name: '`!removeacc <username>`',             value: 'Remove an account from accounts.txt', inline: false },
-      { name: '`!reload`',                           value: 'Reload accounts.txt without restarting', inline: false },
-      { name: '`!reconnect <username>`',             value: 'Manually reconnect a disconnected bot', inline: false },
+      { name: '`!list`',                             value: 'Show all bots and their status', inline: false },
       { name: '`!chat <username> <message>`',        value: 'Send a message in-game via that bot', inline: false },
       { name: '`!broadcast <message>`',              value: 'Send from ALL online bots at once', inline: false },
       { name: '`!logs <username>`',                  value: 'Show last 25 log lines', inline: false },
@@ -111,49 +132,35 @@ function helpEmbed() {
 }
 
 function statusEmoji(bot) {
-  if (bot.status.startsWith('online') || bot.status.startsWith('connected')) return '🟢';
-  if (bot.status.includes('reconnect') || bot.status.includes('joining') ||
-      bot.status.includes('queued')    || bot.status === 'connecting')       return '🟡';
-  if (bot.status === 'kicked') return '🔴';
+  if (bot.status.startsWith('online'))     return '🟢';
+  if (bot.status.includes('reconnect') ||
+      bot.status.includes('joining')   ||
+      bot.status.includes('queued')    ||
+      bot.status === 'connecting')         return '🟡';
+  if (bot.status === 'kicked')             return '🔴';
   return '⚪';
 }
 
 function listEmbed(bots) {
-  const online = bots.filter(b => b.status.startsWith('online') || b.status.startsWith('connected')).length;
+  const online = bots.filter(b => b.status.startsWith('online')).length;
   const lines  = bots.map(b => {
+    const em    = statusEmoji(b);
     const proxy = b.proxy !== 'direct' ? ` 🌐${b.proxy}` : '';
     const cap   = b.captcha ? ' 🔐CAPTCHA' : '';
-    return `${statusEmoji(b)} **${b.username}** — ${b.status}${proxy}${cap} | ↻${b.reconnects}`;
+    return `${em} **${b.username}** — ${b.status}${proxy}${cap} | ↻${b.reconnects}`;
   });
+
   return new EmbedBuilder()
     .setColor(0x00b0ff)
     .setTitle(`🤖 Bots — ${bots.length} total, ${online} online`)
     .setDescription(lines.join('\n') || 'No bots running.');
 }
 
-function accountsEmbed(accounts) {
-  if (!accounts.length) {
-    return new EmbedBuilder()
-      .setColor(0xff5252)
-      .setTitle('📋 Accounts')
-      .setDescription('No accounts loaded. Use `!addacc <username> [password]` to add one.');
-  }
-  const lines = accounts.map(a => {
-    const running = a.running ? ' 🟢 running' : '';
-    const pw      = a.hasPassword ? ' 🔑' : '';
-    return `• **${a.username}**${pw}${running}`;
-  });
-  return new EmbedBuilder()
-    .setColor(0x00b0ff)
-    .setTitle(`📋 Accounts — ${accounts.length} loaded`)
-    .setDescription(lines.join('\n'));
-}
-
-// ── Commands ──────────────────────────────────────────────────────
+// ── Command handler ───────────────────────────────────────────────
 client.on('messageCreate', async (msg) => {
   if (!isAllowed(msg)) return;
 
-  // Captcha reply
+  // ── Captcha reply ─────────────────────────────────────────────
   if (msg.reference?.messageId) {
     const username = captchaReplies.get(msg.reference.messageId);
     if (username) {
@@ -175,24 +182,27 @@ client.on('messageCreate', async (msg) => {
   const cmd   = parts[0]?.toLowerCase();
   const args  = parts.slice(1);
 
-  // !help
+  // ── !help ─────────────────────────────────────────────────────
   if (cmd === 'help') {
     await msg.reply({ embeds: [helpEmbed()] });
     return;
   }
 
-  // !spawn [count] [proxy?]
+  // ── !spawn [count] [proxy?] ────────────────────────────────────
   if (cmd === 'spawn') {
     const count    = Math.min(parseInt(args[0]) || 1, 10);
     const proxyStr = args[1] || null;
+
     if (proxyStr && !/\w+:\d+/.test(proxyStr)) {
-      await msg.reply('❌ Invalid proxy. Use `socks5://user:pass@host:port`');
+      await msg.reply('❌ Invalid proxy. Use `socks5://user:pass@host:port` or `host:port`');
       return;
     }
+
     const created = manager.spawn(count, proxyStr);
     const lines   = created.map((u, i) =>
       `⏳ **${u}**${proxyStr ? ` via ${proxyStr}` : ''} — starts in ~${i * 5}s`
     );
+
     await msg.reply({
       embeds: [
         new EmbedBuilder()
@@ -204,7 +214,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !kill <username>
+  // ── !kill <username> ──────────────────────────────────────────
   if (cmd === 'kill') {
     if (!args[0]) { await msg.reply('❌ Usage: `!kill <username>`'); return; }
     const result = manager.kill(args[0]);
@@ -212,7 +222,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !killall
+  // ── !killall ──────────────────────────────────────────────────
   if (cmd === 'killall') {
     const total = manager.size;
     manager.killAll();
@@ -220,7 +230,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !list
+  // ── !list ─────────────────────────────────────────────────────
   if (cmd === 'list') {
     const bots = manager.list();
     if (!bots.length) { await msg.reply('No bots running. Use `!spawn` to launch some.'); return; }
@@ -228,58 +238,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !accounts
-  if (cmd === 'accounts') {
-    const accounts = manager.listAccounts();
-    await msg.reply({ embeds: [accountsEmbed(accounts)] });
-    return;
-  }
-
-  // !addacc <username> [password]
-  if (cmd === 'addacc') {
-    const username = args[0];
-    const password = args[1] || '';
-    if (!username) { await msg.reply('❌ Usage: `!addacc <username> [password]`'); return; }
-    if (!/^[a-zA-Z0-9_]{1,16}$/.test(username)) {
-      await msg.reply('❌ Invalid username — letters, numbers, underscores only, max 16 chars.');
-      return;
-    }
-    const result = manager.addAccount(username, password);
-    await msg.reply(result.error
-      ? `❌ ${result.error}`
-      : `✅ Added **${username}** — ${result.count} account${result.count !== 1 ? 's' : ''} total.`
-    );
-    return;
-  }
-
-  // !removeacc <username>
-  if (cmd === 'removeacc') {
-    const username = args[0];
-    if (!username) { await msg.reply('❌ Usage: `!removeacc <username>`'); return; }
-    const result = manager.removeAccount(username);
-    await msg.reply(result.error
-      ? `❌ ${result.error}`
-      : `🗑️ Removed **${username}** — ${result.count} account${result.count !== 1 ? 's' : ''} remaining.`
-    );
-    return;
-  }
-
-  // !reload
-  if (cmd === 'reload') {
-    const count = manager.reloadAccounts();
-    await msg.reply(`🔄 Reloaded accounts.txt — **${count}** account${count !== 1 ? 's' : ''} loaded.`);
-    return;
-  }
-
-  // !reconnect <username>
-  if (cmd === 'reconnect') {
-    if (!args[0]) { await msg.reply('❌ Usage: `!reconnect <username>`'); return; }
-    const result = manager.reconnect(args[0]);
-    await msg.reply(result.error ? `❌ ${result.error}` : `🔄 **${args[0]}** reconnecting...`);
-    return;
-  }
-
-  // !chat <username> <message>
+  // ── !chat <username> <message> ────────────────────────────────
   if (cmd === 'chat') {
     const username = args[0];
     const message  = args.slice(1).join(' ');
@@ -289,7 +248,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !broadcast <message>
+  // ── !broadcast <message> ──────────────────────────────────────
   if (cmd === 'broadcast') {
     const message = args.join(' ');
     if (!message) { await msg.reply('❌ Usage: `!broadcast <message>`'); return; }
@@ -301,18 +260,19 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !logs <username>
+  // ── !logs <username> ──────────────────────────────────────────
   if (cmd === 'logs') {
     if (!args[0]) { await msg.reply('❌ Usage: `!logs <username>`'); return; }
     const result = manager.getLogs(args[0], 25);
     if (result.error) { await msg.reply(`❌ ${result.error}`); return; }
-    const text    = result.logs.join('\n') || 'No logs yet.';
+    const text = result.logs.join('\n') || 'No logs yet.';
+    // Discord has a 2000 char message limit — trim if needed
     const trimmed = text.length > 1800 ? '...\n' + text.slice(-1800) : text;
     await msg.reply(`\`\`\`\n${trimmed}\n\`\`\``);
     return;
   }
 
-  // !captcha <username> <answer>
+  // ── !captcha <username> <answer> ──────────────────────────────
   if (cmd === 'captcha') {
     const username = args[0];
     const answer   = args.slice(1).join(' ').trim();
@@ -325,7 +285,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // !proxy <username> <proxy>
+  // ── !proxy <username> <proxy> ─────────────────────────────────
   if (cmd === 'proxy') {
     const username = args[0];
     const proxyStr = args[1];
@@ -338,6 +298,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
+  // Unknown command
   await msg.reply('❓ Unknown command. Type `!help` for the list.');
 });
 
@@ -361,4 +322,6 @@ client.once('ready', async () => {
 });
 
 client.on('error', err => console.error('[Discord] Client error:', err.message));
+
+// ── Start ─────────────────────────────────────────────────────────
 client.login(TOKEN);
