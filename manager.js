@@ -8,7 +8,7 @@
 
 const { MinecraftBot, randomUsername, parseProxy } = require('./minecraft');
 
-const MC_HOST     = process.env.MC_HOST     || 'play.applemc.net';
+const MC_HOST     = process.env.MC_HOST     || 'play.applemc.fun';
 const MC_PORT     = parseInt(process.env.MC_PORT || '25565');
 const MC_VERSION  = process.env.MC_VERSION  || '1.20.1';
 const MC_PASSWORD = process.env.MC_PASSWORD || '231182';
